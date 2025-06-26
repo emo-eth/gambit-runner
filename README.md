@@ -85,12 +85,6 @@ gambit_runner report --json results.json
 -   The runner writes undetected mutations (mutation test failures) to the specified output JSON file.
 -   The `report` command pretty-prints the contents of this file for easy review.
 
-## Notes
-
--   The script uses process pools and may spawn multiple processes; ensure your system has sufficient resources.
--   The build step is run once before mutation testing to ensure the project is in a buildable state.
--   For best results, use with Gambit-generated mutation outputs.
-
 ## License
 
 MIT
