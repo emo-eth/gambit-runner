@@ -33,7 +33,7 @@ gambit_runner run --test-cmd 'forge test'
 ## Features
 
 -   Parallel execution of mutation tests
--   Pre-build step to ensure project is buildable before testing
+-   Pre-build step to ensure mutation tests only have to compile incremental changes
 -   Timeout and debug logging for each test
 -   Pretty-printing of undetected mutation results
 -   Simple JSON output for further analysis
