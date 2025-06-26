@@ -1,0 +1,10 @@
+[project]
+name = "gambit-runner"
+version = "0.1.0"
+description = "Parallelized Gambit mutation test runner and report pretty-printer."
+authors = [{ name = "Your Name", email = "your@email.com" }]
+dependencies = ["psutil>=5.0.0"]
+requires-python = ">=3.8"
+
+[project.scripts]
+gambit_runner = "gambit_runner.__main__:main"
