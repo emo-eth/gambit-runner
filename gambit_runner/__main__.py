@@ -30,7 +30,6 @@ import tempfile
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from typing import List, Dict, Any, Optional, Tuple
 import multiprocessing
-import threading
 import time
 import psutil
 import tomli
@@ -104,6 +103,7 @@ def parse_args():
     run_parser.add_argument('--jobs', type=int, default=multiprocessing.cpu_count(), help="Number of parallel jobs (default: logical CPU count)")
     run_parser.add_argument('--build-cmd', default='forge build', help="Build command to run before mutation testing (default: 'forge build')")
     run_parser.add_argument('--debug', action='store_true', help="Enable debug logging and show test command output.")
+    run_parser.add_argument('--uncaught', action='store_true', help="Only run mutations that were uncaught in the previous run, as listed in the --output file.")
 
     # Report subcommand
     report_parser = subparsers.add_parser('report', help='Pretty-print a mutation test results JSON file')
@@ -151,16 +151,17 @@ def run_mutation_test(
     timeout: float,
     idx: int,
     total: int,
-    debug: bool
-) -> Optional[Tuple[Optional[Dict[str, Any]], int]]:
+    debug: bool,
+    build_cmd: str
+) -> Optional[Tuple[Optional[Dict[str, Any]], int, Optional[Dict[str, Any]]]]:
     """
-    Returns (mutation dict if NOT detected, else None, mutation index).
+    Returns (mutation dict if NOT detected, else None, mutation index, build_fail_info dict if build fails).
     Logs status to stderr and prints test output if debug is True.
     """
     mutant_path = os.path.join(gambit_dir, mutation['name'])
     if not os.path.isfile(mutant_path):
         log(f"[ERROR] [{idx+1}/{total}] Mutant file missing: {mutant_path}. Skipping.", debug)
-        return None, idx
+        return None, idx, None
     original_rel_path = mutation['original']
     try:
         with tempfile.TemporaryDirectory() as tempdir:
@@ -169,9 +170,50 @@ def run_mutation_test(
             mutated_file_path = os.path.join(proj_dir, original_rel_path)
             if not os.path.isfile(mutated_file_path):
                 log(f"[ERROR] [{idx+1}/{total}] Original file not found in tempdir: {mutated_file_path}. Skipping.", debug)
-                return None, idx
+                return None, idx, None
             shutil.copy2(mutant_path, mutated_file_path)
             log(f"[INFO] [{idx+1}/{total}] Starting mutation: {mutation.get('name', '')} in {proj_dir}", debug)
+            log(f"[INFO] [{idx+1}/{total}] Running build: {build_cmd}", debug)
+            try:
+                build_result = subprocess.run(
+                    build_cmd,
+                    shell=True,
+                    cwd=proj_dir,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    timeout=BUILD_TIMEOUT
+                )
+                log_build_output(build_result.stdout, build_result.stderr, debug)
+                if build_result.returncode != 0:
+                    build_fail_info = {
+                        'mutant_name': mutation.get('name', ''),
+                        'build_cmd': build_cmd,
+                        'stdout': build_result.stdout.decode(errors='replace'),
+                        'stderr': build_result.stderr.decode(errors='replace'),
+                        'mutant_path': mutant_path,
+                        'original_rel_path': original_rel_path,
+                    }
+                    return None, idx, build_fail_info
+            except subprocess.TimeoutExpired as e:
+                build_fail_info = {
+                    'mutant_name': mutation.get('name', ''),
+                    'build_cmd': build_cmd,
+                    'stdout': (e.stdout or b'').decode(errors='replace'),
+                    'stderr': (e.stderr or b'').decode(errors='replace'),
+                    'mutant_path': mutant_path,
+                    'original_rel_path': original_rel_path,
+                    'timeout': True,
+                }
+                return None, idx, build_fail_info
+            except Exception as e:
+                build_fail_info = {
+                    'mutant_name': mutation.get('name', ''),
+                    'build_cmd': build_cmd,
+                    'exception': str(e),
+                    'mutant_path': mutant_path,
+                    'original_rel_path': original_rel_path,
+                }
+                return None, idx, build_fail_info
             log(f"[INFO] [{idx+1}/{total}] Running: {test_cmd}", debug)
             start_time = time.time()
             try:
@@ -187,7 +229,7 @@ def run_mutation_test(
                 log_output(idx, total, mutation.get('name', ''), result.stdout, result.stderr, debug)
                 if result.returncode == 0:
                     log(f"[RESULT] [{idx+1}/{total}] UNCAUGHT (test suite PASSED) for mutation: {mutation.get('name', '')} (elapsed: {elapsed:.2f}s)", debug)
-                    return mutation, idx  # Uncaught mutation
+                    return mutation, idx, None  # Uncaught mutation
                 else:
                     log(f"[RESULT] [{idx+1}/{total}] CAUGHT (test suite FAILED) for mutation: {mutation.get('name', '')} (elapsed: {elapsed:.2f}s)", debug)
             except subprocess.TimeoutExpired as e:
@@ -197,12 +239,11 @@ def run_mutation_test(
                 log(f"[ERROR] [{idx+1}/{total}] Test command failed for mutation {mutation.get('name', '')}: {e}.", debug)
     except Exception as e:
         log(f"[ERROR] [{idx+1}/{total}] Exception in mutation {mutation.get('name', '')}: {e}.", debug)
-    return None, idx
+    return None, idx, None
 
 
 def run_main(args):
     gambit_input_path = os.path.join(args.gambit_dir, 'gambit_results.json')
-
     # Build step before running mutations
     log(f"[INFO] Running build command: {args.build_cmd}", args.debug)
     try:
@@ -225,6 +266,46 @@ def run_main(args):
     except Exception as e:
         print(f"[ERROR] Exception during build: {e}. Aborting.", file=sys.stderr)
         sys.exit(1)
+    # --- Run test suite in main context before mutation testing ---
+    log(f"[INFO] Running test suite in main project context: {args.test_cmd}", args.debug)
+    try:
+        test_result = subprocess.run(
+            args.test_cmd,
+            shell=True,
+            cwd=args.project_root,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=args.timeout
+        )
+        if test_result.returncode != 0:
+            print("\n[ERROR] Test suite failed in main project context. Aborting mutation testing.", file=sys.stderr)
+            print(f"  Test command: {args.test_cmd}", file=sys.stderr)
+            print("  --- TEST STDOUT ---", file=sys.stderr)
+            print(test_result.stdout.decode(errors='replace'), file=sys.stderr)
+            print("  --- TEST STDERR ---", file=sys.stderr)
+            print(test_result.stderr.decode(errors='replace'), file=sys.stderr)
+            print("\n[ABORTED] The test suite must pass on the unmutated code before running mutation testing.", file=sys.stderr)
+            print("[SUGGESTION] Please fix your tests or code so that the test suite passes, then re-run mutation testing.", file=sys.stderr)
+            print("[INFO] No results have been written to disk.\n", file=sys.stderr)
+            sys.exit(3)
+    except subprocess.TimeoutExpired as e:
+        print(f"\n[ERROR] Test suite timed out after {args.timeout} seconds in main project context. Aborting mutation testing.", file=sys.stderr)
+        print(f"  Test command: {args.test_cmd}", file=sys.stderr)
+        print("  --- TEST STDOUT ---", file=sys.stderr)
+        print((e.stdout or b'').decode(errors='replace'), file=sys.stderr)
+        print("  --- TEST STDERR ---", file=sys.stderr)
+        print((e.stderr or b'').decode(errors='replace'), file=sys.stderr)
+        print("\n[ABORTED] The test suite must pass on the unmutated code before running mutation testing.", file=sys.stderr)
+        print("[SUGGESTION] Please fix your tests or code so that the test suite passes, then re-run mutation testing.", file=sys.stderr)
+        print("[INFO] No results have been written to disk.\n", file=sys.stderr)
+        sys.exit(3)
+    except Exception as e:
+        print(f"\n[ERROR] Exception while running test suite in main project context: {e}. Aborting mutation testing.", file=sys.stderr)
+        print(f"  Test command: {args.test_cmd}", file=sys.stderr)
+        print("\n[ABORTED] The test suite must pass on the unmutated code before running mutation testing.", file=sys.stderr)
+        print("[SUGGESTION] Please fix your tests or code so that the test suite passes, then re-run mutation testing.", file=sys.stderr)
+        print("[INFO] No results have been written to disk.\n", file=sys.stderr)
+        sys.exit(3)
 
     try:
         with open(gambit_input_path, 'r') as f:
@@ -235,6 +316,29 @@ def run_main(args):
     if not mutations:
         log("[ERROR] No mutations found in input file.", args.debug)
         sys.exit(1)
+
+    # If --uncaught is specified, filter mutations to only those in the output file
+    if getattr(args, 'uncaught', False):
+        try:
+            with open(args.output, 'r') as f:
+                uncaught_mutations_prev = json.load(f)
+        except Exception as e:
+            print(f"[ERROR] --uncaught specified but failed to read or parse {args.output}: {e}", file=sys.stderr)
+            sys.exit(1)
+        if not isinstance(uncaught_mutations_prev, list):
+            print(f"[ERROR] --uncaught specified but {args.output} is not a valid list of mutations.", file=sys.stderr)
+            sys.exit(1)
+        # Use the 'name' field to match mutations
+        uncaught_names = set(m.get('name') for m in uncaught_mutations_prev if 'name' in m)
+        if not uncaught_names:
+            print(f"[ERROR] --uncaught specified but no valid mutant names found in {args.output}.", file=sys.stderr)
+            sys.exit(1)
+        filtered_mutations = [m for m in mutations if m.get('name') in uncaught_names]
+        if not filtered_mutations:
+            print(f"[ERROR] --uncaught specified but none of the uncaught mutants from {args.output} are present in {gambit_input_path}.", file=sys.stderr)
+            sys.exit(1)
+        log(f"[INFO] --uncaught: Running only {len(filtered_mutations)} uncaught mutants from {args.output}.", args.debug)
+        mutations = filtered_mutations
 
     total = len(mutations)
     uncaught_mutations: List[Dict[str, Any]] = []
@@ -257,12 +361,34 @@ def run_main(args):
                     args.timeout,
                     idx,
                     total,
-                    args.debug
+                    args.debug,
+                    args.build_cmd
                 ) for idx, mutation in enumerate(mutations)
             ]
             for future in as_completed(futures):
                 try:
-                    result, idx = future.result()
+                    result, _, build_fail_info = future.result()
+                    if build_fail_info is not None:
+                        print("\n[ERROR] Build failed for mutant:", file=sys.stderr)
+                        print(f"  Mutant name: {build_fail_info.get('mutant_name')}", file=sys.stderr)
+                        print(f"  Mutant file: {build_fail_info.get('mutant_path')}", file=sys.stderr)
+                        print(f"  Original rel path: {build_fail_info.get('original_rel_path')}", file=sys.stderr)
+                        print(f"  Build command: {build_fail_info.get('build_cmd')}", file=sys.stderr)
+                        if 'timeout' in build_fail_info and build_fail_info['timeout']:
+                            print(f"  [TIMEOUT] Build command timed out after {BUILD_TIMEOUT} seconds.", file=sys.stderr)
+                        if 'stdout' in build_fail_info and build_fail_info['stdout']:
+                            print("  --- BUILD STDOUT ---", file=sys.stderr)
+                            print(build_fail_info['stdout'], file=sys.stderr)
+                        if 'stderr' in build_fail_info and build_fail_info['stderr']:
+                            print("  --- BUILD STDERR ---", file=sys.stderr)
+                            print(build_fail_info['stderr'], file=sys.stderr)
+                        if 'exception' in build_fail_info:
+                            print(f"  Exception: {build_fail_info['exception']}", file=sys.stderr)
+                        print("\n[ABORTED] The build failed for this mutant. This usually means your source code has changed since the mutants were generated, and the mutants are now out of date.", file=sys.stderr)
+                        print("[SUGGESTION] Please re-run 'gambit mutate' to regenerate mutants for the current codebase.", file=sys.stderr)
+                        print("[INFO] No results have been written to disk.\n", file=sys.stderr)
+                        kill_child_processes()
+                        os._exit(2)
                     completed += 1
                     if result:
                         uncaught_mutations.append(result)
