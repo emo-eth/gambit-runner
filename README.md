@@ -37,6 +37,9 @@ gambit_runner run --test-cmd 'forge test'
 -   Timeout and debug logging for each test
 -   Pretty-printing of undetected mutation results
 -   Simple JSON output for further analysis
+-   **Mutant generation** from Solidity source and Foundry remappings (see `generate`/`full`)
+-   **One-step workflow**: generate mutants and run mutation testing in a single command (see `full`)
+-   **Selective rerun**: rerun only previously undetected mutations with `--uncaught`
 
 ## Requirements
 
@@ -44,6 +47,13 @@ gambit_runner run --test-cmd 'forge test'
 -   [psutil](https://pypi.org/project/psutil/)
 
 ## Usage
+
+### Subcommands Overview
+
+-   `run`: Run mutation tests on existing mutants
+-   `report`: Pretty-print a mutation test results JSON file
+-   `generate`: Generate a `gambit.json` file from Solidity sources and Foundry remappings, then run `gambit mutate`
+-   `full`: Generate mutants and run the full mutation testing suite in one step (combines `generate` and `run`)
 
 ### 1. Run Mutation Tests
 
@@ -72,13 +82,83 @@ gambit_runner report [--json gambit_test_results.json]
 
 -   `--json`: JSON file to pretty-print (default: `gambit_test_results.json`).
 
-## Example
+### 3. Generate Mutants (`generate`)
+
+Generate a `gambit.json` file from your Solidity sources and Foundry remappings, then run `gambit mutate` to produce mutants:
+
+```sh
+gambit_runner generate <input_dir> [--foundry-toml foundry.toml] [--output gambit.json] [--sourceroot .] [-- <extra gambit mutate args>]
+```
+
+**Arguments:**
+
+-   `input_dir` (required): Directory to crawl for `.sol` files (e.g. `src/`)
+-   `--foundry-toml`: Path to `foundry.toml` (default: `foundry.toml`)
+-   `--output`: Output `gambit.json` file (default: `gambit.json`)
+-   `--sourceroot`: `sourceroot` value for each entry (default: `.`)
+-   All arguments after `--` are passed directly to `gambit mutate`
+
+### 4. Full One-Step Workflow (`full`)
+
+Generate mutants and run the full mutation testing suite in a single command:
+
+```sh
+gambit_runner full <input_dir> --test-cmd 'forge test ...' [--foundry-toml foundry.toml] [--gambit-json gambit.json] [--sourceroot .] [--gambit-dir ./gambit_out] [--project-root .] [--output gambit_test_results.json] [--timeout 3.0] [--jobs N] [--build-cmd 'forge build'] [--debug] [--uncaught] [-- <extra gambit mutate args>]
+```
+
+**Arguments:**
+
+-   `input_dir` (required): Directory to crawl for `.sol` files (e.g. `src/`)
+-   `--test-cmd` (required): The test command to run for each mutant (e.g., `'forge test ...'`)
+-   `--foundry-toml`: Path to `foundry.toml` (default: `foundry.toml`)
+-   `--gambit-json`: Output `gambit.json` file for mutant generation (default: `gambit.json`)
+-   `--sourceroot`: `sourceroot` value for each entry (default: `.`)
+-   `--gambit-dir`: Directory containing `gambit_results.json` and mutant files (default: `./gambit_out`)
+-   `--project-root`: Root directory of the project source code (default: `.`)
+-   `--output`: Output file for undetected mutations (default: `gambit_test_results.json`)
+-   `--timeout`: Timeout in seconds for each test command (default: `3.0`)
+-   `--jobs`: Number of parallel jobs (default: logical CPU count)
+-   `--build-cmd`: Build command to run before mutation testing (default: `'forge build'`)
+-   `--debug`: Enable debug logging and show test command output
+-   `--uncaught`: Only run mutations that were uncaught in the previous run, as listed in the `--output` file
+-   All arguments after `--` are passed directly to `gambit mutate`
+
+**Example:**
+
+```sh
+gambit_runner full src/ --test-cmd 'forge test' --foundry-toml foundry.toml --gambit-json gambit.json --gambit-dir ./gambit_out --project-root . --output results.json --timeout 5 --jobs 4 --build-cmd 'forge build' --debug -- --mutate-all
+```
+
+## Example Workflows
+
+**Generate mutants and run mutation tests in one step:**
+
+```sh
+gambit_runner full src/ --test-cmd 'forge test' --debug
+```
+
+**Just generate mutants:**
+
+```sh
+gambit_runner generate src/ --foundry-toml foundry.toml --output my_gambit.json -- --mutate-all
+```
+
+**Run mutation tests on existing mutants:**
 
 ```sh
 gambit_runner run --test-cmd 'forge test' --gambit-dir ./gambit_out --project-root . --output results.json --timeout 5 --jobs 4 --build-cmd 'forge build' --debug
+```
 
+**Pretty-print results:**
+
+```sh
 gambit_runner report --json results.json
 ```
+
+## Tips
+
+-   Use a gambit-specific Foundry profile with optimized settings, e.g., `via_ir` disabled for faster test compilation
+    -   Be sure to specify the same profile for the `build_cmd` otherwise it will have to re-build the tests from scratch
 
 ## Output
 

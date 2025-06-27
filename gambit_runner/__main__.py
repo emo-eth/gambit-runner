@@ -116,6 +116,22 @@ def parse_args():
     generate_parser.add_argument('--sourceroot', type=str, default='.', help='sourceroot value for each entry')
     generate_parser.add_argument('gambit_args', nargs=argparse.REMAINDER, help='Extra arguments to pass to gambit mutate (after --)')
 
+    full_parser = subparsers.add_parser('full', help='Generate mutants and run the full mutation testing suite (combines generate and run)')
+    full_parser.add_argument('input_dir', type=str, help='Directory to crawl for .sol files (e.g. src/)')
+    full_parser.add_argument('--foundry-toml', type=str, default='foundry.toml', help='Path to foundry.toml')
+    full_parser.add_argument('--gambit-json', type=str, default='gambit.json', help='Output gambit.json file (for mutant generation)')
+    full_parser.add_argument('--sourceroot', type=str, default='.', help='sourceroot value for each entry')
+    full_parser.add_argument('--gambit-dir', default='./gambit_out', help='Directory containing gambit_results.json and mutant files (default: ./gambit_out)')
+    full_parser.add_argument('--test-cmd', required=True, help="Test command to run (e.g., 'forge test ...')")
+    full_parser.add_argument('--project-root', default='.', help='Root directory of the project source code (default: .)')
+    full_parser.add_argument('--output', default='gambit_test_results.json', help='Output file for mutation test failures (undetected mutations)')
+    full_parser.add_argument('--timeout', type=float, default=3.0, help='Timeout in seconds for each test command (default: 3.0)')
+    full_parser.add_argument('--jobs', type=int, default=multiprocessing.cpu_count(), help='Number of parallel jobs (default: logical CPU count)')
+    full_parser.add_argument('--build-cmd', default='forge build', help="Build command to run before mutation testing (default: 'forge build')")
+    full_parser.add_argument('--debug', action='store_true', help='Enable debug logging and show test command output.')
+    full_parser.add_argument('--uncaught', action='store_true', help='Only run mutations that were uncaught in the previous run, as listed in the --output file.')
+    full_parser.add_argument('gambit_args', nargs=argparse.REMAINDER, help='Extra arguments to pass to gambit mutate (after --)')
+
     return parser.parse_args()
 
 
@@ -494,6 +510,46 @@ def generate_main(args):
         sys.exit(e.returncode)
 
 
+def full_main(args):
+    # Step 1: Generate mutants (like generate_main)
+    remappings = parse_remappings(args.foundry_toml)
+    sol_files = find_sol_files(args.input_dir)
+    entries = make_gambit_json_entries(sol_files, remappings, args.sourceroot)
+    with open(args.gambit_json, "w") as f:
+        json.dump(entries, f, indent=4)
+    print(f"Wrote {len(entries)} entries to {args.gambit_json}")
+    # Run gambit mutate
+    gambit_args = ["gambit", "mutate", "--json", args.gambit_json] + (args.gambit_args or [])
+    print(f"Running: {' '.join(gambit_args)}")
+    try:
+        result = subprocess.run(gambit_args, check=True)
+        if result.returncode == 0:
+            print("gambit mutate completed successfully.")
+        else:
+            print(f"gambit mutate exited with code {result.returncode}")
+    except FileNotFoundError:
+        print("[ERROR] 'gambit' command not found. Please ensure Gambit is installed and in your PATH.", file=sys.stderr)
+        sys.exit(1)
+    except subprocess.CalledProcessError as e:
+        print(f"[ERROR] gambit mutate failed: {e}", file=sys.stderr)
+        sys.exit(e.returncode)
+    # Step 2: Run mutation testing (like run_main)
+    # Prepare a namespace with the right attributes for run_main
+    class RunArgs:
+        pass
+    run_args = RunArgs()
+    run_args.test_cmd = args.test_cmd
+    run_args.gambit_dir = args.gambit_dir
+    run_args.project_root = args.project_root
+    run_args.output = args.output
+    run_args.timeout = args.timeout
+    run_args.jobs = args.jobs
+    run_args.build_cmd = args.build_cmd
+    run_args.debug = args.debug
+    run_args.uncaught = args.uncaught
+    run_main(run_args)
+
+
 def main() -> None:
     args = parse_args()
     if args.subcommand == 'run':
@@ -502,6 +558,8 @@ def main() -> None:
         report_main(args)
     elif args.subcommand == 'generate':
         generate_main(args)
+    elif args.subcommand == 'full':
+        full_main(args)
     else:
         raise ValueError(f"Unknown subcommand: {args.subcommand}")
 
