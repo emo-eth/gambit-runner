@@ -1,6 +1,7 @@
 # /// script
 # dependencies = [
 #   "psutil",
+#   "tomli"
 # ]
 # ///
 
@@ -32,6 +33,7 @@ import multiprocessing
 import threading
 import time
 import psutil
+import tomli
 
 # Use 'spawn' to avoid fork-related issues with process pools
 multiprocessing.set_start_method('spawn', force=True)
@@ -106,6 +108,13 @@ def parse_args():
     # Report subcommand
     report_parser = subparsers.add_parser('report', help='Pretty-print a mutation test results JSON file')
     report_parser.add_argument('--json', default='gambit_test_results.json', help='JSON file to pretty-print (default: gambit_test_results.json)')
+
+    generate_parser = subparsers.add_parser('generate', help='Generate a gambit.json file from foundry.toml and .sol files, then run gambit mutate.')
+    generate_parser.add_argument('input_dir', type=str, help='Directory to crawl for .sol files (e.g. src/)')
+    generate_parser.add_argument('--foundry-toml', type=str, default='foundry.toml', help='Path to foundry.toml')
+    generate_parser.add_argument('--output', type=str, default='gambit.json', help='Output gambit.json file')
+    generate_parser.add_argument('--sourceroot', type=str, default='.', help='sourceroot value for each entry')
+    generate_parser.add_argument('gambit_args', nargs=argparse.REMAINDER, help='Extra arguments to pass to gambit mutate (after --)')
 
     return parser.parse_args()
 
@@ -299,12 +308,74 @@ def report_main(args):
     pretty_print_mutations(mutations)
 
 
+def parse_remappings(foundry_toml_path: str) -> List[str]:
+    with open(foundry_toml_path, "rb") as f:
+        data = tomli.load(f)
+    remappings = []
+    profile = data.get("profile", {}).get("default", {})
+    if "remappings" in profile:
+        remappings = profile["remappings"]
+    elif "remappings" in data:
+        remappings = data["remappings"]
+    if isinstance(remappings, list):
+        return remappings
+    elif isinstance(remappings, str):
+        return [remappings]
+    return []
+
+
+def find_sol_files(input_dir: str) -> List[str]:
+    sol_files = []
+    for root, _, files in os.walk(input_dir):
+        for file in files:
+            if file.endswith(".sol"):
+                sol_files.append(os.path.join(root, file))
+    return sol_files
+
+
+def make_gambit_json_entries(sol_files: List[str], remappings: List[str], sourceroot: str) -> List[Dict[str, Any]]:
+    entries = []
+    for sol_file in sol_files:
+        entries.append({
+            "filename": sol_file,
+            "sourceroot": sourceroot,
+            "solc_remappings": remappings,
+        })
+    return entries
+
+
+def generate_main(args):
+    remappings = parse_remappings(args.foundry_toml)
+    sol_files = find_sol_files(args.input_dir)
+    entries = make_gambit_json_entries(sol_files, remappings, args.sourceroot)
+    with open(args.output, "w") as f:
+        json.dump(entries, f, indent=4)
+    print(f"Wrote {len(entries)} entries to {args.output}")
+    # Run gambit mutate
+    gambit_args = ["gambit", "mutate", "--json", args.output] + (args.gambit_args or [])
+    print(f"Running: {' '.join(gambit_args)}")
+    try:
+        result = subprocess.run(gambit_args, check=True)
+        if result.returncode == 0:
+            print("gambit mutate completed successfully.")
+        else:
+            print(f"gambit mutate exited with code {result.returncode}")
+    except FileNotFoundError:
+        print("[ERROR] 'gambit' command not found. Please ensure Gambit is installed and in your PATH.", file=sys.stderr)
+        sys.exit(1)
+    except subprocess.CalledProcessError as e:
+        print(f"[ERROR] gambit mutate failed: {e}", file=sys.stderr)
+        sys.exit(e.returncode)
+
+
 def main() -> None:
     args = parse_args()
     if args.subcommand == 'run':
         run_main(args)
     elif args.subcommand == 'report':
         report_main(args)
+    elif args.subcommand == 'generate':
+        generate_main(args)
     else:
         raise ValueError(f"Unknown subcommand: {args.subcommand}")
 
