@@ -159,6 +159,7 @@ gambit_runner report --json results.json
 
 -   Use a gambit-specific Foundry profile with optimized settings, e.g., `via_ir` disabled for faster test compilation
     -   Be sure to specify the same profile for the `build_cmd` otherwise it will have to re-build the tests from scratch
+-   **Be sure to disable `dynamic_test_linking` in `foundry.toml` or inline when running mutation tests**
 
 ## Output
 

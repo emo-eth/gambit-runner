@@ -1,6 +1,6 @@
 [project]
 name = "gambit-runner"
-version = "0.2.0"
+version = "0.2.1"
 description = "Parallelized Gambit mutation test runner and report pretty-printer."
 authors = [{ name = "Your Name", email = "your@email.com" }]
 dependencies = ["psutil>=5.0.0", "tomli>=2.0.0"]

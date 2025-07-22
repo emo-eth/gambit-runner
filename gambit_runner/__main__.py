@@ -182,7 +182,18 @@ def run_mutation_test(
     try:
         with tempfile.TemporaryDirectory() as tempdir:
             proj_dir = os.path.join(tempdir, 'proj')
-            shutil.copytree(project_root, proj_dir, dirs_exist_ok=True)
+            # Copy project files but exclude problematic directories to avoid filesystem issues
+            def ignore_problematic_dirs(dirname, filenames):
+                to_ignore = []
+                # Exclude .git to avoid fsmonitor socket issues
+                if '.git' in filenames:
+                    to_ignore.append('.git')
+                # Exclude other potentially problematic directories
+                for dirname in ['.DS_Store', 'node_modules', '__pycache__', '.pytest_cache']:
+                    if dirname in filenames:
+                        to_ignore.append(dirname)
+                return to_ignore
+            shutil.copytree(project_root, proj_dir, dirs_exist_ok=True, ignore=ignore_problematic_dirs)
             mutated_file_path = os.path.join(proj_dir, original_rel_path)
             if not os.path.isfile(mutated_file_path):
                 log(f"[ERROR] [{idx+1}/{total}] Original file not found in tempdir: {mutated_file_path}. Skipping.", debug)
@@ -259,6 +270,14 @@ def run_mutation_test(
 
 
 def run_main(args):
+    """
+    Run mutation tests on existing mutants.
+    
+    Note: The mutation testing process creates temporary copies of the project
+    to test each mutant in isolation. To avoid filesystem issues (particularly
+    with Git's fsmonitor daemon sockets), problematic directories like .git,
+    node_modules, etc. are excluded during the copy operation.
+    """
     gambit_input_path = os.path.join(args.gambit_dir, 'gambit_results.json')
     # Build step before running mutations
     log(f"[INFO] Running build command: {args.build_cmd}", args.debug)
