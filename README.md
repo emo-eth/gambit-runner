@@ -87,15 +87,17 @@ gambit_runner report [--json gambit_test_results.json]
 Generate a `gambit.json` file from your Solidity sources and Foundry remappings, then run `gambit mutate` to produce mutants:
 
 ```sh
-gambit_runner generate <input_dir> [--foundry-toml foundry.toml] [--output gambit.json] [--sourceroot .] [-- <extra gambit mutate args>]
+gambit_runner generate [input_dir] [--foundry-toml foundry.toml] [--output gambit.json] [--sourceroot .] [--ignore-paths test/ mocks/] [--use-existing existing_gambit.json] [-- <extra gambit mutate args>]
 ```
 
 **Arguments:**
 
--   `input_dir` (required): Directory to crawl for `.sol` files (e.g. `src/`)
+-   `input_dir` (optional): Directory to crawl for `.sol` files (e.g. `src/`) - not needed when using `--use-existing`
 -   `--foundry-toml`: Path to `foundry.toml` (default: `foundry.toml`)
 -   `--output`: Output `gambit.json` file (default: `gambit.json`)
 -   `--sourceroot`: `sourceroot` value for each entry (default: `.`)
+-   `--ignore-paths`: Paths to ignore when finding `.sol` files (e.g., `test/` `mocks/`)
+-   `--use-existing`: Use existing `gambit.json` file instead of generating a new one
 -   All arguments after `--` are passed directly to `gambit mutate`
 
 ### 4. Full One-Step Workflow (`full`)
@@ -103,16 +105,18 @@ gambit_runner generate <input_dir> [--foundry-toml foundry.toml] [--output gambi
 Generate mutants and run the full mutation testing suite in a single command:
 
 ```sh
-gambit_runner full <input_dir> --test-cmd 'forge test ...' [--foundry-toml foundry.toml] [--gambit-json gambit.json] [--sourceroot .] [--gambit-dir ./gambit_out] [--project-root .] [--output gambit_test_results.json] [--timeout 3.0] [--jobs N] [--build-cmd 'forge build'] [--debug] [--uncaught] [-- <extra gambit mutate args>]
+gambit_runner full [input_dir] --test-cmd 'forge test ...' [--foundry-toml foundry.toml] [--gambit-json gambit.json] [--sourceroot .] [--ignore-paths test/ mocks/] [--use-existing existing_gambit.json] [--gambit-dir ./gambit_out] [--project-root .] [--output gambit_test_results.json] [--timeout 3.0] [--jobs N] [--build-cmd 'forge build'] [--debug] [--uncaught] [-- <extra gambit mutate args>]
 ```
 
 **Arguments:**
 
--   `input_dir` (required): Directory to crawl for `.sol` files (e.g. `src/`)
+-   `input_dir` (optional): Directory to crawl for `.sol` files (e.g. `src/`) - not needed when using `--use-existing`
 -   `--test-cmd` (required): The test command to run for each mutant (e.g., `'forge test ...'`)
 -   `--foundry-toml`: Path to `foundry.toml` (default: `foundry.toml`)
 -   `--gambit-json`: Output `gambit.json` file for mutant generation (default: `gambit.json`)
 -   `--sourceroot`: `sourceroot` value for each entry (default: `.`)
+-   `--ignore-paths`: Paths to ignore when finding `.sol` files (e.g., `test/` `mocks/`)
+-   `--use-existing`: Use existing `gambit.json` file instead of generating a new one
 -   `--gambit-dir`: Directory containing `gambit_results.json` and mutant files (default: `./gambit_out`)
 -   `--project-root`: Root directory of the project source code (default: `.`)
 -   `--output`: Output file for undetected mutations (default: `gambit_test_results.json`)
@@ -137,10 +141,34 @@ gambit_runner full src/ --test-cmd 'forge test' --foundry-toml foundry.toml --ga
 gambit_runner full src/ --test-cmd 'forge test' --debug
 ```
 
+**Full workflow with ignored paths:**
+
+```sh
+gambit_runner full src/ --test-cmd 'forge test' --ignore-paths test/ mocks/ --debug
+```
+
+**Full workflow using existing gambit.json:**
+
+```sh
+gambit_runner full --test-cmd 'forge test' --use-existing existing_gambit.json --debug
+```
+
 **Just generate mutants:**
 
 ```sh
 gambit_runner generate src/ --foundry-toml foundry.toml --output my_gambit.json -- --mutate-all
+```
+
+**Generate mutants with ignored paths:**
+
+```sh
+gambit_runner generate src/ --ignore-paths test/ mocks/ -- --mutate-all
+```
+
+**Use existing gambit.json file:**
+
+```sh
+gambit_runner generate --use-existing existing_gambit.json -- --mutate-all
 ```
 
 **Run mutation tests on existing mutants:**

@@ -110,17 +110,21 @@ def parse_args():
     report_parser.add_argument('--json', default='gambit_test_results.json', help='JSON file to pretty-print (default: gambit_test_results.json)')
 
     generate_parser = subparsers.add_parser('generate', help='Generate a gambit.json file from foundry.toml and .sol files, then run gambit mutate.')
-    generate_parser.add_argument('input_dir', type=str, help='Directory to crawl for .sol files (e.g. src/)')
+    generate_parser.add_argument('input_dir', type=str, nargs='?', help='Directory to crawl for .sol files (e.g. src/) (not needed when using --use-existing)')
     generate_parser.add_argument('--foundry-toml', type=str, default='foundry.toml', help='Path to foundry.toml')
     generate_parser.add_argument('--output', type=str, default='gambit.json', help='Output gambit.json file')
     generate_parser.add_argument('--sourceroot', type=str, default='.', help='sourceroot value for each entry')
+    generate_parser.add_argument('--ignore-paths', type=str, nargs='*', help='Paths to ignore when finding .sol files (e.g., test/ mocks/)')
+    generate_parser.add_argument('--use-existing', type=str, help='Use existing gambit.json file instead of generating a new one')
     generate_parser.add_argument('gambit_args', nargs=argparse.REMAINDER, help='Extra arguments to pass to gambit mutate (after --)')
 
     full_parser = subparsers.add_parser('full', help='Generate mutants and run the full mutation testing suite (combines generate and run)')
-    full_parser.add_argument('input_dir', type=str, help='Directory to crawl for .sol files (e.g. src/)')
+    full_parser.add_argument('input_dir', type=str, nargs='?', help='Directory to crawl for .sol files (e.g. src/) (not needed when using --use-existing)')
     full_parser.add_argument('--foundry-toml', type=str, default='foundry.toml', help='Path to foundry.toml')
     full_parser.add_argument('--gambit-json', type=str, default='gambit.json', help='Output gambit.json file (for mutant generation)')
     full_parser.add_argument('--sourceroot', type=str, default='.', help='sourceroot value for each entry')
+    full_parser.add_argument('--ignore-paths', type=str, nargs='*', help='Paths to ignore when finding .sol files (e.g., test/ mocks/)')
+    full_parser.add_argument('--use-existing', type=str, help='Use existing gambit.json file instead of generating a new one')
     full_parser.add_argument('--gambit-dir', default='./gambit_out', help='Directory containing gambit_results.json and mutant files (default: ./gambit_out)')
     full_parser.add_argument('--test-cmd', required=True, help="Test command to run (e.g., 'forge test ...')")
     full_parser.add_argument('--project-root', default='.', help='Root directory of the project source code (default: .)')
@@ -485,12 +489,20 @@ def parse_remappings(foundry_toml_path: str) -> List[str]:
     return []
 
 
-def find_sol_files(input_dir: str) -> List[str]:
+def find_sol_files(input_dir: str, ignore_paths: Optional[List[str]] = None) -> List[str]:
     sol_files = []
-    for root, _, files in os.walk(input_dir):
+    ignore_paths = ignore_paths or []
+    
+    for root, dirs, files in os.walk(input_dir):
+        # Remove ignored directories from dirs to prevent walking into them
+        dirs[:] = [d for d in dirs if not any(ignore_path in os.path.join(root, d) for ignore_path in ignore_paths)]
+        
         for file in files:
             if file.endswith(".sol"):
-                sol_files.append(os.path.join(root, file))
+                file_path = os.path.join(root, file)
+                # Check if this file path should be ignored
+                if not any(ignore_path in file_path for ignore_path in ignore_paths):
+                    sol_files.append(file_path)
     return sol_files
 
 
@@ -506,14 +518,28 @@ def make_gambit_json_entries(sol_files: List[str], remappings: List[str], source
 
 
 def generate_main(args):
-    remappings = parse_remappings(args.foundry_toml)
-    sol_files = find_sol_files(args.input_dir)
-    entries = make_gambit_json_entries(sol_files, remappings, args.sourceroot)
-    with open(args.output, "w") as f:
-        json.dump(entries, f, indent=4)
-    print(f"Wrote {len(entries)} entries to {args.output}")
+    # Check if we should use an existing gambit.json file
+    if hasattr(args, 'use_existing') and args.use_existing:
+        if not os.path.exists(args.use_existing):
+            print(f"[ERROR] Specified gambit.json file does not exist: {args.use_existing}", file=sys.stderr)
+            sys.exit(1)
+        print(f"Using existing gambit.json file: {args.use_existing}")
+        gambit_json_path = args.use_existing
+    else:
+        # Generate new gambit.json
+        if not args.input_dir:
+            print("[ERROR] input_dir is required when not using --use-existing", file=sys.stderr)
+            sys.exit(1)
+        remappings = parse_remappings(args.foundry_toml)
+        sol_files = find_sol_files(args.input_dir, getattr(args, 'ignore_paths', None))
+        entries = make_gambit_json_entries(sol_files, remappings, args.sourceroot)
+        with open(args.output, "w") as f:
+            json.dump(entries, f, indent=4)
+        print(f"Wrote {len(entries)} entries to {args.output}")
+        gambit_json_path = args.output
+    
     # Run gambit mutate
-    gambit_args = ["gambit", "mutate", "--json", args.output] + (args.gambit_args or [])
+    gambit_args = ["gambit", "mutate", "--json", gambit_json_path] + (args.gambit_args or [])
     print(f"Running: {' '.join(gambit_args)}")
     try:
         result = subprocess.run(gambit_args, check=True)
@@ -531,14 +557,28 @@ def generate_main(args):
 
 def full_main(args):
     # Step 1: Generate mutants (like generate_main)
-    remappings = parse_remappings(args.foundry_toml)
-    sol_files = find_sol_files(args.input_dir)
-    entries = make_gambit_json_entries(sol_files, remappings, args.sourceroot)
-    with open(args.gambit_json, "w") as f:
-        json.dump(entries, f, indent=4)
-    print(f"Wrote {len(entries)} entries to {args.gambit_json}")
+    # Check if we should use an existing gambit.json file
+    if hasattr(args, 'use_existing') and args.use_existing:
+        if not os.path.exists(args.use_existing):
+            print(f"[ERROR] Specified gambit.json file does not exist: {args.use_existing}", file=sys.stderr)
+            sys.exit(1)
+        print(f"Using existing gambit.json file: {args.use_existing}")
+        gambit_json_path = args.use_existing
+    else:
+        # Generate new gambit.json
+        if not args.input_dir:
+            print("[ERROR] input_dir is required when not using --use-existing", file=sys.stderr)
+            sys.exit(1)
+        remappings = parse_remappings(args.foundry_toml)
+        sol_files = find_sol_files(args.input_dir, getattr(args, 'ignore_paths', None))
+        entries = make_gambit_json_entries(sol_files, remappings, args.sourceroot)
+        with open(args.gambit_json, "w") as f:
+            json.dump(entries, f, indent=4)
+        print(f"Wrote {len(entries)} entries to {args.gambit_json}")
+        gambit_json_path = args.gambit_json
+    
     # Run gambit mutate
-    gambit_args = ["gambit", "mutate", "--json", args.gambit_json] + (args.gambit_args or [])
+    gambit_args = ["gambit", "mutate", "--json", gambit_json_path] + (args.gambit_args or [])
     print(f"Running: {' '.join(gambit_args)}")
     try:
         result = subprocess.run(gambit_args, check=True)
